@@ -1,8 +1,8 @@
 # BancoTecMi Backend
 
-API REST compartida por la aplicación web, la aplicación móvil y el software de escritorio de BancoTecMi.
+API REST de BancoTecMi preparada para publicar en Render y para consumir desde la web, la app móvil o el software de escritorio del proyecto.
 
-Los clientes se conectan únicamente mediante HTTPS al backend. Ningún cliente debe conectarse directamente a PostgreSQL ni conocer las credenciales de la base de datos.
+La capa pública expone un conjunto de rutas REST sobre PostgreSQL usando Express y `pg`. Todas las rutas protegidas de lectura y escritura esperan un `Authorization: Bearer <TOKEN_JWT>` válido.
 
 ## URL pública
 
@@ -10,9 +10,15 @@ Los clientes se conectan únicamente mediante HTTPS al backend. Ningún cliente 
 https://bank-backend-flh4.onrender.com
 ```
 
-Health check:
+## Base de la API
 
 ```text
+https://bank-backend-flh4.onrender.com/api/v1
+```
+
+## Health check
+
+```http
 GET https://bank-backend-flh4.onrender.com/health
 ```
 
@@ -26,27 +32,21 @@ Respuesta esperada:
 }
 ```
 
-Base de la API:
+## Arquitectura
 
 ```text
-https://bank-backend-flh4.onrender.com/api/v1
-```
-
-## Arquitectura de conexión
-
-```text
-Web / App / Software
+Cliente web / app / escritorio
         |
         | HTTPS + JSON + JWT
         v
-Backend BancoTecMi en Render
+Render: BancoTecMi Backend
         |
-        | PostgreSQL privado
+        | Express + pg
         v
-Supabase PostgreSQL
+PostgreSQL (Supabase)
 ```
 
-Las aplicaciones consumidoras solo necesitan la URL pública del backend. No deben incluir `DB_HOST`, `DB_PASSWORD`, `DB_USER` ni ninguna credencial de PostgreSQL.
+La idea es que los clientes no vean ni sepan el usuario y contraseña de PostgreSQL. En la capa de acceso solo se usa la URL pública del backend, el JSON y el JWT.
 
 ## Autenticación
 
@@ -69,6 +69,25 @@ Content-Type: application/json
 }
 ```
 
+Respuesta:
+
+```json
+{
+  "usuario": {
+    "id_usuario": "uuid",
+    "username": "ana.demo",
+    "id_cliente": "uuid",
+    "cliente": {
+      "id_cliente": "uuid",
+      "nombre": "Ana",
+      "apellido_paterno": "Lopez",
+      "apellido_materno": "Martinez",
+      "email": "ana@example.com"
+    }
+  }
+}
+```
+
 ### Iniciar sesión
 
 ```http
@@ -83,13 +102,26 @@ Content-Type: application/json
 }
 ```
 
-La respuesta contiene un token JWT. Todas las rutas protegidas deben enviar ese token:
+Respuesta esperada:
+
+```json
+{
+  "token": "<TOKEN_JWT>",
+  "usuario": {
+    "id": "uuid",
+    "username": "ana.demo",
+    "idCliente": "uuid"
+  }
+}
+```
+
+El `token` se usa en el header:
 
 ```http
 Authorization: Bearer <TOKEN_JWT>
 ```
 
-Ejemplo con `curl`:
+### Ejemplo con curl
 
 ```bash
 curl -X POST https://bank-backend-flh4.onrender.com/api/v1/auth/login \
@@ -97,9 +129,16 @@ curl -X POST https://bank-backend-flh4.onrender.com/api/v1/auth/login \
   -d '{"usuario":"ana.demo","password":"UnaPasswordSegura123!"}'
 ```
 
-## Operaciones CRUD
+### Ejemplo de consumo con token
 
-Todas las operaciones CRUD requieren autenticación.
+```bash
+curl https://bank-backend-flh4.onrender.com/api/v1/cuentas \
+  -H "Authorization: Bearer <TOKEN_JWT>"
+```
+
+## CRUD general
+
+El backend expone un router genérico con el patrón:
 
 ```text
 GET    /api/v1/:recurso
@@ -110,50 +149,7 @@ PATCH  /api/v1/:recurso/:id
 DELETE /api/v1/:recurso/:id
 ```
 
-Ejemplo para consultar cuentas:
-
-```bash
-curl https://bank-backend-flh4.onrender.com/api/v1/cuentas \
-  -H "Authorization: Bearer <TOKEN_JWT>"
-```
-
-Ejemplo para consultar una cuenta específica:
-
-```bash
-curl https://bank-backend-flh4.onrender.com/api/v1/cuentas/<ID_CUENTA> \
-  -H "Authorization: Bearer <TOKEN_JWT>"
-```
-
-Ejemplo para crear un beneficiario:
-
-```bash
-curl -X POST https://bank-backend-flh4.onrender.com/api/v1/beneficiarios \
-  -H "Authorization: Bearer <TOKEN_JWT>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id_cliente": "<ID_CLIENTE>",
-    "nombre": "Beneficiario Demo",
-    "alias": "Demo",
-    "banco": "Banco Escolar",
-    "clabe_destino": "646180000000000002"
-  }'
-```
-
-Ejemplo para actualizar un registro:
-
-```bash
-curl -X PATCH https://bank-backend-flh4.onrender.com/api/v1/beneficiarios/<ID_BENEFICIARIO> \
-  -H "Authorization: Bearer <TOKEN_JWT>" \
-  -H "Content-Type: application/json" \
-  -d '{"alias":"Beneficiario principal"}'
-```
-
-Ejemplo para eliminar un registro:
-
-```bash
-curl -X DELETE https://bank-backend-flh4.onrender.com/api/v1/beneficiarios/<ID_BENEFICIARIO> \
-  -H "Authorization: Bearer <TOKEN_JWT>"
-```
+Todas las rutas de `GET`, `POST`, `PUT`, `PATCH` y `DELETE` deben enviar el `Bearer` token válido del login.
 
 ### Recursos disponibles
 
@@ -185,11 +181,11 @@ estados-cuenta
 notificaciones
 ```
 
-Las tablas `usuario_acceso`, `usuario_roles` y `rol_permisos` no se exponen mediante el CRUD genérico para proteger contraseñas y relaciones de seguridad.
+Los recursos `usuario_acceso`, `usuario_roles` y `rol_permisos` se mantienen privados para evitar fuga de contraseñas y de privilegios de seguridad.
 
 ## Transferencias
 
-Las transferencias usan la función transaccional `fn_realizar_transferencia` definida en el esquema PostgreSQL. La operación valida cuentas, saldo y bloqueo de filas antes de crear los movimientos.
+La operación de transferencia usa la función transaccional de PostgreSQL llamada `fn_realizar_transferencia` y valida saldo, cuenta origen, cuenta destino y bloqueo de filas antes de generar el movimiento.
 
 ```http
 POST /api/v1/transferencias
@@ -207,31 +203,50 @@ Content-Type: application/json
 }
 ```
 
-## Configuración local
+## Observaciones de seguridad
 
-1. Copia `.env.example` como `.env`.
-2. Completa las variables de PostgreSQL y `JWT_SECRET`.
-3. Instala dependencias y arranca el backend:
+- Nunca publiques `.env` ni secretos de PostgreSQL.
+- Nunca compartas tokens JWT en repositorios públicos.
+- Los clientes usan solo la URL pública del backend y el header `Authorization`.
+- El backend usa `helmet`, `cors`, `express-rate-limit` y `zod` para reforzar la API.
+
+## Configuración local
 
 ```bash
 npm install
 npm run dev
 ```
 
-El servidor local queda disponible en `http://localhost:4000`.
+El servidor local queda disponible en:
 
-Nunca subas `.env`, contraseñas, tokens ni claves de PostgreSQL al repositorio. En Render, estas variables se configuran desde **Environment Variables**.
+```text
+http://localhost:4000
+```
+
+Para levantar el proyecto local y apuntar a tu base local, crea un `.env` a partir de `.env.example` y rellena:
+
+```text
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+DB_SSL
+JWT_SECRET
+FRONTEND_ORIGINS
+```
 
 ## Tecnologías
 
 - Node.js
-- Express
+- Express 5
 - PostgreSQL
 - Supabase PostgreSQL
 - `pg`
-- bcrypt
-- JWT
-- Zod
-- Helmet
-- CORS
+- `bcryptjs`
+- `jsonwebtoken`
+- `zod`
+- `helmet`
+- `cors`
+- `express-rate-limit`
 - Render
