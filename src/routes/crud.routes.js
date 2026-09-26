@@ -41,6 +41,11 @@ const ignoredFields = new Set([
   'fecha_registro', 'fecha_hora', 'fecha_apertura', 'fecha_solicitud'
 ]);
 
+const insertIgnoredFields = new Set([
+  'password_hash', 'fecha_creacion', 'fecha_actualizacion', 'fecha_registro', 'fecha_hora',
+  'fecha_apertura', 'fecha_solicitud'
+]);
+
 function quoteIdentifier(value) {
   if (!/^[a-z_][a-z0-9_]*$/.test(value)) throw new Error('Identificador SQL no permitido');
   return `"${value}"`;
@@ -55,10 +60,52 @@ function getResource(req, res) {
   return resource;
 }
 
-function getFields(body) {
+function buildScope(resourceName, user, startIndex = 1) {
+  if (!resourceName || !user || !user.idCliente) {
+    return { sql: '', params: [], nextIndex: startIndex };
+  }
+
+  switch (resourceName) {
+    case 'cuentas':
+      return {
+        sql: `id_cliente = $${startIndex}`,
+        params: [user.idCliente],
+        nextIndex: startIndex + 1
+      };
+    case 'movimientos':
+      return {
+        sql: `id_cuenta IN (SELECT id_cuenta FROM cuentas WHERE id_cliente = $${startIndex})`,
+        params: [user.idCliente],
+        nextIndex: startIndex + 1
+      };
+    case 'transacciones':
+      return {
+        sql: `(id_cuenta_origen IN (SELECT id_cuenta FROM cuentas WHERE id_cliente = $${startIndex}) OR id_cuenta_destino IN (SELECT id_cuenta FROM cuentas WHERE id_cliente = $${startIndex}))`,
+        params: [user.idCliente],
+        nextIndex: startIndex + 1
+      };
+    default:
+      return { sql: '', params: [], nextIndex: startIndex };
+  }
+}
+
+function buildResourceFilter(resourceName, { user } = {}) {
+  const scope = buildScope(resourceName, user, 1);
+  return {
+    where: scope.sql ? `WHERE ${scope.sql}` : '',
+    params: scope.params
+  };
+}
+
+function getFields(body, { allowIdentifiers = false } = {}) {
+  const skipSet = allowIdentifiers ? insertIgnoredFields : ignoredFields;
   return Object.entries(body || {})
-    .filter(([field, value]) => !ignoredFields.has(field) && /^[a-z_][a-z0-9_]*$/.test(field) && value !== undefined)
+    .filter(([field, value]) => !skipSet.has(field) && /^[a-z_][a-z0-9_]*$/.test(field) && value !== undefined)
     .map(([field, value]) => [field, value]);
+}
+
+function getInsertFields(body) {
+  return getFields(body, { allowIdentifiers: true });
 }
 
 router.use(authenticate);
@@ -68,9 +115,21 @@ router.get('/:resource', async (req, res, next) => {
     const resource = getResource(req, res);
     if (!resource) return;
     const [table] = resource;
+    const requestedClientId = req.query.id_cliente ?? req.query.idCliente ?? null;
+    if (requestedClientId && requestedClientId !== req.user.idCliente) {
+      return res.status(403).json({ error: 'No autorizado para consultar registros de otro cliente' });
+    }
+
     const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 50, 1), 100);
     const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
-    const result = await pool.query(`SELECT * FROM ${quoteIdentifier(table)} LIMIT $1 OFFSET $2`, [limit, offset]);
+    const scope = buildScope(req.params.resource, req.user, 1);
+    const whereClause = scope.sql ? `WHERE ${scope.sql}` : '';
+    const values = [...scope.params, limit, offset];
+
+    const result = await pool.query(
+      `SELECT * FROM ${quoteIdentifier(table)} ${whereClause} LIMIT $${scope.nextIndex} OFFSET $${scope.nextIndex + 1}`,
+      values
+    );
     return res.json({ data: result.rows, limit, offset });
   } catch (error) {
     return next(error);
@@ -82,9 +141,11 @@ router.get('/:resource/:id', async (req, res, next) => {
     const resource = getResource(req, res);
     if (!resource) return;
     const [table, primaryKey] = resource;
+    const scope = buildScope(req.params.resource, req.user, 2);
+    const whereClause = scope.sql ? `AND ${scope.sql}` : '';
     const result = await pool.query(
-      `SELECT * FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(primaryKey)} = $1`,
-      [req.params.id]
+      `SELECT * FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(primaryKey)} = $1${whereClause}`,
+      [req.params.id, ...scope.params]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Registro no encontrado' });
     return res.json(result.rows[0]);
@@ -98,7 +159,7 @@ router.post('/:resource', async (req, res, next) => {
     const resource = getResource(req, res);
     if (!resource) return;
     const [table] = resource;
-    const fields = getFields(req.body);
+    const fields = getFields(req.body, { allowIdentifiers: true });
     if (fields.length === 0) return res.status(400).json({ error: 'El cuerpo no contiene campos validos' });
     const columns = fields.map(([field]) => quoteIdentifier(field));
     const values = fields.map(([, value]) => value);
@@ -154,3 +215,10 @@ router.delete('/:resource/:id', async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.router = router;
+module.exports.resources = resources;
+module.exports.quoteIdentifier = quoteIdentifier;
+module.exports.buildScope = buildScope;
+module.exports.buildResourceFilter = buildResourceFilter;
+module.exports.getFields = getFields;
+module.exports.getInsertFields = getInsertFields;

@@ -48,7 +48,7 @@ const loginSchema = z.object({
 
 function issueToken(user) {
   return jwt.sign(
-    { sub: user.id_usuario, username: user.username },
+    { sub: user.id_usuario, username: user.username, idCliente: user.id_cliente },
     env.JWT_SECRET,
     { expiresIn: '1h' }
   );
