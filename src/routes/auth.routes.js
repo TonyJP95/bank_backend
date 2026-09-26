@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const { Router } = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -52,6 +53,10 @@ function issueToken(user) {
     env.JWT_SECRET,
     { expiresIn: '1h' }
   );
+}
+
+function hashSessionToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 function sendValidationError(res, error) {
@@ -160,12 +165,13 @@ router.post('/login', async (req, res, next) => {
     );
 
     const token = issueToken(user);
+    const tokenHash = hashSessionToken(token);
 
     await pool.query(
       `INSERT INTO sesiones
         (id_usuario, id_dispositivo, token_hash, ip_origen, fecha_inicio, fecha_expiracion, revocada, fecha_revocacion)
        VALUES ($1, NULL, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 hour', false, NULL)`,
-      [user.id_usuario, token, ip]
+      [user.id_usuario, tokenHash, ip]
     );
 
     await recordAudit(ip, user, 'LOGIN', 'AUTH', 'usuario_acceso', user.id_usuario, 'OK');
@@ -180,3 +186,4 @@ router.post('/login', async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.hashSessionToken = hashSessionToken;

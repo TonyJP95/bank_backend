@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { getInsertFields, buildResourceFilter } = require('../src/routes/crud.routes');
+const { hashSessionToken } = require('../src/routes/auth.routes');
 
 test('permite conservar campos de relación en inserciones de cuentas', () => {
   const fields = getInsertFields({
@@ -27,4 +28,13 @@ test('aplica filtro seguro por dueño para cuentas y movimientos', () => {
     where: 'WHERE id_cuenta IN (SELECT id_cuenta FROM cuentas WHERE id_cliente = $1)',
     params: ['client-1']
   });
+});
+
+test('hash de sesión no excede la longitud de la columna y no expone el JWT', () => {
+  const token = 'eyJhbGciOiJIUzI1NiJ9.' + 'a'.repeat(1200);
+  const hash = hashSessionToken(token);
+
+  assert.equal(hash.length, 64);
+  assert.notEqual(hash, token);
+  assert.match(hash, /^[a-f0-9]+$/);
 });
